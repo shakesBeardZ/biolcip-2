@@ -30,6 +30,7 @@ DATASET_CHOICES = ["catalogue", "rsg"]
 def parse_args():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", type=str, default="hf-hub:imageomics/bioclip-2")
+    ap.add_argument("--pretrained", type=str, default=None, help="Pretrained tag/path passed to create_model_and_transforms (e.g., openai, laion2b_s32b_b79k).")
     ap.add_argument("--dataset_loader", type=str, default="catalogue", choices=DATASET_CHOICES)
     ap.add_argument("--csv", type=str, required=True)
     ap.add_argument("--data_root", type=str, default=None)
@@ -44,8 +45,10 @@ def parse_args():
     ap.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--checkpoint", type=str, default=None, help="Optional checkpoint (.pt) to load before evaluation")
     ap.add_argument("--dump_predictions", type=str, default=None)
+    ap.add_argument("--dump_predictions_csv", type=str, default=None, help="If provided, dump one CSV row per evaluated sample (true/pred labels, top-k labels/probs).")
     ap.add_argument("--dump_topk", type=int, default=5)
     ap.add_argument("--dump_misclassified_csv", type=str, default=None)
+    ap.add_argument("--dump_metrics_json", type=str, default=None, help="If provided, dump aggregate metrics/top-k to a JSON file.")
     ap.add_argument("--class_list", type=str, default=None, help="Optional file containing taxonomy chains to define the class set")
     # optional dataset-side taxonomy filter (e.g., only Order=Scleractinia)
     ap.add_argument("--filter_rank", type=str, default=None, choices=["kingdom","phylum","cls","class","order","family","genus","species"])
@@ -154,12 +157,20 @@ def zeroshot_classifier(model_name: str, model, classnames: List[str], templates
     return W
 
 
+def ensure_parent_dir(path: str | None) -> None:
+    if not path:
+        return
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+
 def main():
     args = parse_args()
     device = torch.device(args.device)
     model, _, preprocess_val = create_model_and_transforms(
         args.model,
-        pretrained=None,
+        pretrained=args.pretrained,
         precision=args.precision,
         device=device,
         output_dict=True,
@@ -264,6 +275,8 @@ def main():
     cast_dtype = get_cast_dtype(args.precision)
     dump = args.dump_predictions is not None
     dump_rows = []
+    dump_csv = args.dump_predictions_csv is not None
+    csv_rows = []
     collect_mis = args.dump_misclassified_csv is not None
 
     n = 0.0
@@ -289,17 +302,52 @@ def main():
             probs = F.softmax(logits, dim=-1)
             bs = images.size(0)
             for bi in range(bs):
+                pv, pi = torch.topk(probs[bi], k=min(args.dump_topk, probs.shape[-1]))
+                topk_preds = [
+                    {
+                        "rank": j + 1,
+                        "index": int(pi[j].item()),
+                        "label": classnames[int(pi[j].item())],
+                        "prob": float(pv[j].item()),
+                    }
+                    for j in range(pi.numel())
+                ]
+                true_idx = int(targets[bi].item())
+                true_label = classnames[true_idx]
+                pred1_idx = int(pi[0].item())
+                pred1_label = classnames[pred1_idx]
+                pred1_prob = float(pv[0].item())
+                path = ds.paths[global_index + bi]
+                row = {
+                    "sample_index": int(global_index + bi),
+                    "path": path,
+                    "true_index": true_idx,
+                    "true_label": true_label,
+                    "pred_index": pred1_idx,
+                    "pred_label": pred1_label,
+                    "pred_prob": pred1_prob,
+                    "correct_top1": int(pred1_idx == true_idx),
+                }
+                # Flatten top-k columns for downstream tabular metrics.
+                for entry in topk_preds:
+                    rk = entry["rank"]
+                    row[f"top{rk}_index"] = entry["index"]
+                    row[f"top{rk}_label"] = entry["label"]
+                    row[f"top{rk}_prob"] = entry["prob"]
+
                 if dump:
-                    pv, pi = torch.topk(probs[bi], k=min(args.dump_topk, probs.shape[-1]))
-                    preds = [
-                        {"rank": j+1, "index": int(pi[j].item()), "label": classnames[int(pi[j].item())], "prob": float(pv[j].item())}
-                        for j in range(pi.numel())
-                    ]
                     dump_rows.append({
-                        "true_index": int(targets[bi].item()),
-                        "true_label": classnames[int(targets[bi].item())],
-                        "topk": preds,
+                        "sample_index": int(global_index + bi),
+                        "path": path,
+                        "true_index": true_idx,
+                        "true_label": true_label,
+                        "pred_index": pred1_idx,
+                        "pred_label": pred1_label,
+                        "pred_prob": pred1_prob,
+                        "topk": topk_preds,
                     })
+                if dump_csv or collect_mis:
+                    csv_rows.append(row)
             global_index += bs
 
     if n == 0:
@@ -313,47 +361,57 @@ def main():
     for k in sorted(topk.keys()):
         print(f"  top{k}: {topk[k]*100:.2f}")
 
+    metrics_payload = {
+        "model": args.model,
+        "pretrained": args.pretrained,
+        "checkpoint": args.checkpoint,
+        "rank": args.rank,
+        "template_style": args.template_style,
+        "n_samples": int(n),
+        "num_classes": int(len(classnames)),
+    }
+    for k in sorted(topk.keys()):
+        metrics_payload[f"top{k}"] = float(topk[k])
+
     if dump:
-        os.makedirs(os.path.dirname(args.dump_predictions), exist_ok=True)
+        ensure_parent_dir(args.dump_predictions)
         with open(args.dump_predictions, 'w') as f:
             json.dump(dump_rows, f, indent=2)
         print("Wrote:", args.dump_predictions)
 
+    if dump_csv:
+        import csv as csv_mod
+        ensure_parent_dir(args.dump_predictions_csv)
+        if csv_rows:
+            fieldnames = list(csv_rows[0].keys())
+        else:
+            fieldnames = [
+                "sample_index", "path", "true_index", "true_label",
+                "pred_index", "pred_label", "pred_prob", "correct_top1",
+            ]
+        with open(args.dump_predictions_csv, "w", newline="") as f:
+            w = csv_mod.DictWriter(f, fieldnames=fieldnames)
+            w.writeheader()
+            for row in csv_rows:
+                w.writerow(row)
+        print("Wrote:", args.dump_predictions_csv)
+
     if collect_mis:
         import csv
-        os.makedirs(os.path.dirname(args.dump_misclassified_csv), exist_ok=True)
+        ensure_parent_dir(args.dump_misclassified_csv)
         with open(args.dump_misclassified_csv, 'w', newline='') as f:
             w = csv.writer(f)
             w.writerow(["path", "pred_label", "true_label"])
-            # second quick pass for paths
-            global_index = 0
-            with torch.no_grad():
-                for images, targets in torch.utils.data.DataLoader(
-                    ds,
-                    batch_size=args.batch_size,
-                    num_workers=0,
-                    shuffle=False,
-                    persistent_workers=False,
-                    pin_memory=False,
-                ):
-                    images = images.to(device)
-                    if cast_dtype is not None:
-                        images = images.to(dtype=cast_dtype)
-                    targets = targets.to(device)
-                    with autocast():
-                        img_feats, _ = model.encode_image(images)
-                        img_feats = F.normalize(img_feats, dim=-1)
-                        logits = model.logit_scale.exp() * img_feats @ classifier
-                        probs = F.softmax(logits, dim=-1)
-                    bs = images.size(0)
-                    for bi in range(bs):
-                        true_idx = int(targets[bi].item())
-                        pred_idx = int(torch.argmax(probs[bi]).item())
-                        if pred_idx != true_idx:
-                            path = ds.paths[global_index + bi]
-                            w.writerow([path, classnames[pred_idx], classnames[true_idx]])
-                    global_index += bs
+            for row in csv_rows:
+                if int(row["correct_top1"]) == 0:
+                    w.writerow([row["path"], row["pred_label"], row["true_label"]])
         print("Wrote:", args.dump_misclassified_csv)
+
+    if args.dump_metrics_json:
+        ensure_parent_dir(args.dump_metrics_json)
+        with open(args.dump_metrics_json, "w") as f:
+            json.dump(metrics_payload, f, indent=2)
+        print("Wrote:", args.dump_metrics_json)
 
 
 if __name__ == "__main__":

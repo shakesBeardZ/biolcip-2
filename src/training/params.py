@@ -154,6 +154,23 @@ def parse_args(args):
         default=None,
         help="Column name to use for image paths in coral_split CSV (default: auto-detect)."
     )
+    parser.add_argument(
+        "--coral-path-replace-from",
+        type=str,
+        default=None,
+        help="Optional string/prefix to replace in coral image paths."
+    )
+    parser.add_argument(
+        "--coral-path-replace-to",
+        type=str,
+        default=None,
+        help="Replacement for --coral-path-replace-from."
+    )
+    parser.add_argument(
+        "--coral-no-infer-genus-from-species",
+        action="store_true",
+        help="Do not infer missing genus from binomial species text in coral_split dataset."
+    )
 
     parser.add_argument(
         "--unlock-text-projection",

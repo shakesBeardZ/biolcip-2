@@ -1,0 +1,19 @@
+CONDA_BASE=/home/felembaa/anaconda3 CONDA_ENV=pytoenv \
+nohup bash eccv_2026_runs/finetune_coral_genus_clip_local.sh \
+> logs_finetune/clip_fulldata.launch.log 2>&1 &
+
+
+
+ps -eo pid,ppid,pgid,cmd | grep "torchrun"
+
+clip_fulldata|finetune_coral_genus_clip_local.sh|
+pgrep -af "finetune_coral_genus_clip_local.sh|torchrun.*src.training.main|python -u -m src.training.main"
+
+
+
+setsid bash -lc '
+CONDA_BASE=/home/felembaa/anaconda3 CONDA_ENV=pytoenv \
+bash eccv_2026_runs/finetune_coral_genus_openclip_local.sh
+' > logs_finetune/openclip_fulldata.launch.log 2>&1 < /dev/null &
+echo $!
+

@@ -534,6 +534,9 @@ def get_coral_split_dataset(args, preprocess_fn, is_train, epoch=0, tokenizer=No
         split_column=args.coral_split_column,
         include_splits=include_splits,
         drop_missing_targets=not args.coral_keep_missing_targets,
+        infer_genus_from_species=not args.coral_no_infer_genus_from_species,
+        path_replace_from=args.coral_path_replace_from,
+        path_replace_to=args.coral_path_replace_to,
         return_metadata=False,
     )
 

@@ -37,6 +37,8 @@ module load cuda/11.8
 RUN_NAME=${RUN_NAME:-"coral_genus_ft_$(date +%Y%m%d_%H%M%S)"}
 LOG_DIR=${LOG_DIR:-"./logs_finetune"}
 CSV_PATH=/home/yahiab/reefnet_project/CoralNet_Images/patch_folders/reefnet_with_07_filteration_v02_hard_corals_no_exif_with_taxonomy.csv
+CORAL_PATH_REPLACE_FROM=${CORAL_PATH_REPLACE_FROM:-"/ibex/project/c2253/CoralNet_Images/patch_folders/reefnet_with_07_filteration_v02_hard_corals_no_exif/"}
+CORAL_PATH_REPLACE_TO=${CORAL_PATH_REPLACE_TO:-"/raid/felembaa/reefnet_with_07_filteration_v02_hard_corals_no_exif/"}
 
 torchrun \
   --nproc-per-node=${GPUS_PER_NODE} \
@@ -53,6 +55,9 @@ torchrun \
   --coral-target-level genus \
   --coral-caption-mode chain \
   --coral-path-key patch_path \
+  --coral-path-replace-from "${CORAL_PATH_REPLACE_FROM}" \
+  --coral-path-replace-to "${CORAL_PATH_REPLACE_TO}" \
+  --coral-no-infer-genus-from-species \
   --coral-keep-missing-targets \
   --batch-size 128 \
   --epochs 100 \

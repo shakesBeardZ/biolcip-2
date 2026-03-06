@@ -66,12 +66,19 @@ def pt_save(pt_obj, file_path):
     with of as f:
         torch.save(pt_obj, file_path)
 
-def pt_load(file_path, map_location=None):
+def pt_load(file_path, map_location=None, weights_only=False):
     if file_path.startswith('s3'):
         logging.info('Loading remote checkpoint, which may take a bit.')
     of = fsspec.open(file_path, "rb")
     with of as f:
-        out = torch.load(f, map_location=map_location)
+        # PyTorch >=2.6 defaults to weights_only=True, which breaks loading
+        # training checkpoints that include optimizer/scaler/python objects.
+        try:
+            out = torch.load(f, map_location=map_location, weights_only=weights_only)
+        except TypeError:
+            # Backward compatibility for older torch versions that do not
+            # support the weights_only argument.
+            out = torch.load(f, map_location=map_location)
     return out
 
 def check_exists(file_path):

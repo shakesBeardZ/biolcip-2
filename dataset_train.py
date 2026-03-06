@@ -54,9 +54,16 @@ class CoralTrainingDataset(Dataset):
         to ``local_path`` with fallbacks to ``filepath`` or ``path``.
     return_metadata:
         When ``True`` (default) include per-sample metadata in ``__getitem__``.
-        drop_missing_targets:
+    drop_missing_targets:
         Drop rows that do not produce a valid target label. When ``False``,
         rows missing the requested rank are kept but receive ``target_idx = -1``.
+    infer_genus_from_species:
+        If ``True`` (default), infer missing genus from the first token of a
+        binomial species name (e.g. ``"Acropora humilis"`` -> genus ``"Acropora"``).
+        Set to ``False`` to keep genus empty when genus is missing in CSV.
+    path_replace_from / path_replace_to:
+        Optional string pair applied to each resolved path via ``str.replace``.
+        Useful to remap storage roots across environments.
     split_column:
         Optional column used to filter the CSV (e.g. ``split``).
     include_splits:
@@ -83,6 +90,9 @@ class CoralTrainingDataset(Dataset):
         drop_missing_targets: bool = True,
         split_column: Optional[str] = None,
         include_splits: Optional[Sequence[str]] = None,
+        infer_genus_from_species: bool = True,
+        path_replace_from: Optional[str] = None,
+        path_replace_to: Optional[str] = None,
     ) -> None:
         self.csv_file = csv_file
         self.data_root = data_root
@@ -94,6 +104,13 @@ class CoralTrainingDataset(Dataset):
         self.caption_prefix = caption_prefix.strip() if caption_prefix else None
         self.normalize_anthozoa = normalize_anthozoa
         self.return_metadata = return_metadata
+        self.infer_genus_from_species = infer_genus_from_species
+        self.path_replace_from = path_replace_from
+        self.path_replace_to = path_replace_to
+        if (self.path_replace_from is None) != (self.path_replace_to is None):
+            raise ValueError("path_replace_from and path_replace_to must be provided together.")
+        if self.path_replace_from == "":
+            raise ValueError("path_replace_from cannot be an empty string.")
 
         self._data = pd.read_csv(csv_file)
         if self._data.empty:
@@ -220,6 +237,8 @@ class CoralTrainingDataset(Dataset):
             path = p.strip()
             if self.data_root is not None and not os.path.isabs(path):
                 path = os.path.join(self.data_root, path)
+            if self.path_replace_from is not None:
+                path = path.replace(self.path_replace_from, self.path_replace_to)
             self.paths.append(path)
 
         self.captions = captions
@@ -270,7 +289,7 @@ class CoralTrainingDataset(Dataset):
         if species_raw:
             tokens = species_raw.split()
             if len(tokens) >= 2:
-                if not genus:
+                if self.infer_genus_from_species and not genus:
                     genus = tokens[0]
                 if genus and tokens[0].lower() == genus.lower():
                     species_ep = tokens[1]
@@ -422,6 +441,9 @@ if __name__ == "__main__":
     parser.add_argument("--path_key", default=None, help="Explicit column to use for image paths")
     parser.add_argument("--no_normalize_anthozoa", action="store_true", help="Disable Anthozoa normalization")
     parser.add_argument("--keep-missing-targets", action="store_true", help="Retain rows without the requested taxonomy rank.")
+    parser.add_argument("--no-infer-genus-from-species", action="store_true", help="Do not infer genus from binomial species text.")
+    parser.add_argument("--path-replace-from", default=None, help="Optional path prefix/string to replace.")
+    parser.add_argument("--path-replace-to", default=None, help="Replacement for --path-replace-from.")
 
     args = parser.parse_args()
 
@@ -436,6 +458,9 @@ if __name__ == "__main__":
         normalize_anthozoa=not args.no_normalize_anthozoa,
         path_key=args.path_key,
         drop_missing_targets=not args.keep_missing_targets,
+        infer_genus_from_species=not args.no_infer_genus_from_species,
+        path_replace_from=args.path_replace_from,
+        path_replace_to=args.path_replace_to,
         return_metadata=not args.no_metadata,
     )
 
